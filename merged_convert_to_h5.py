@@ -109,9 +109,6 @@ def pixel_array(ds):
     return arr
 
 
-def chunk_list(lst, k):
-    for i in range(0, len(lst), k):
-        yield lst[i:i + k]
 
 
 # -----------------------------------------------------------
@@ -121,9 +118,9 @@ def chunk_list(lst, k):
 def write_h5(
     out_path: str,
     accession_id: str,
-    part_idx: int,
     ds_list,
-    compression_mode: str
+    compression_mode: str,
+    chunk_size:int
 ):
 
     arrays = [pixel_array(ds) for ds in ds_list]
@@ -159,15 +156,16 @@ def write_h5(
                     shuffle=hdf5plugin.Blosc.SHUFFLE
                 )
             )
+        chunk_depth = min(chunk_size, stack.shape[0])
 
         hf.create_dataset(
             "images",
             data=stack,
+            chunks=(chunk_depth, stack.shape[1], stack.shape[2]),
             **kwargs
         )
 
         hf.attrs["accession_id"] = accession_id
-        hf.attrs["part_idx"] = int(part_idx)
         hf.attrs["num_images"] = int(stack.shape[0])
         hf.attrs["shape_hw"] = str(tuple(stack.shape[-2:]))
         hf.attrs["dtype"] = str(stack.dtype)
@@ -180,7 +178,7 @@ def write_h5(
 def convert_one_tar(
     tar_path,
     out_dir,
-    k,
+    chunk_size,
     max_dicoms,
     compression_mode
 ):
@@ -194,31 +192,23 @@ def convert_one_tar(
 
     ds_list = sort_dicoms(ds_list)
 
-    k_eff = len(ds_list) if k == 0 else max(1, k)
 
-    written = []
-    part = 0
+    out_path = os.path.join(
+    out_dir,
+    f"{accession_id}.h5"
+    )
 
-    for block in chunk_list(ds_list, k_eff):
+    write_h5(
+        out_path,
+        accession_id,
+        ds_list,
+        compression_mode,
+        chunk_size
+    )
 
-        out_path = os.path.join(
-            out_dir,
-            accession_id,
-            f"{accession_id}_part{part:04d}.h5"
-        )
+    return [out_path]
 
-        write_h5(
-            out_path,
-            accession_id,
-            part,
-            block,
-            compression_mode
-        )
-
-        written.append(out_path)
-        part += 1
-
-    return written
+ 
 
 
 def list_tar_files(input_dir):
@@ -243,9 +233,14 @@ def main():
 
     ap.add_argument("--input_dir", required=True)
     ap.add_argument("--out_dir", required=True)
-    ap.add_argument("--k", type=int, required=True)
     ap.add_argument("--limit_accessions", type=int, default=None)
     ap.add_argument("--max_dicoms_per_accession", type=int, default=None)
+    ap.add_argument(
+    "--chunk_size",
+    type=int,
+    default=32,
+    help="Number of slices per HDF5 chunk."
+)
 
     ap.add_argument(
         "--compression",
@@ -268,7 +263,7 @@ def main():
         written = convert_one_tar(
             tar_path=tar_path,
             out_dir=args.out_dir,
-            k=args.k,
+            chunk_size=args.chunk_size,
             max_dicoms=args.max_dicoms_per_accession,
             compression_mode=args.compression
         )
